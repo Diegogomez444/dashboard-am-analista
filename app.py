@@ -180,7 +180,19 @@ def load_telegram_data():
 
     async def _fetch():
         async with TelegramClient(StringSession(TG_SESSION), int(TG_API_ID), TG_API_HASH) as client:
-            entity = await client.get_entity(TG_CHANNEL)
+            # Para canales privados (ID numérico), buscar en diálogos para obtener el access_hash
+            ch = TG_CHANNEL.lstrip("-")
+            if ch.isdigit():
+                real_id = int(TG_CHANNEL.lstrip("-").lstrip("100")) if TG_CHANNEL.startswith("-100") else int(TG_CHANNEL)
+                entity = None
+                async for dialog in client.iter_dialogs():
+                    if dialog.entity.id == real_id:
+                        entity = dialog.entity
+                        break
+                if entity is None:
+                    entity = await client.get_entity(int(TG_CHANNEL))
+            else:
+                entity = await client.get_entity(TG_CHANNEL)
             full   = await client(GetFullChannelRequest(entity))
 
             subscribers = full.full_chat.participants_count
