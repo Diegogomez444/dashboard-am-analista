@@ -21,6 +21,8 @@ try:
     TG_API_HASH   = st.secrets.get("TG_API_HASH",   "")
     TG_SESSION    = "".join(str(st.secrets.get("TG_SESSION", "")).split())
     TG_CHANNEL    = st.secrets.get("TG_CHANNEL",    "")
+    GID_TG_SUBS   = st.secrets.get("GID_TG_SUBS",   "")
+    APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
 except Exception:
     SHEET_ID      = "1KszbEw3CX5jWtWxqE_Oy7Bi17IA5ZJr6FfOkCRJ4zH4"
     GID_GENERAL   = "0"
@@ -31,6 +33,8 @@ except Exception:
     TG_API_HASH   = ""
     TG_SESSION    = ""
     TG_CHANNEL    = ""
+    GID_TG_SUBS   = ""
+    APPS_SCRIPT_URL = ""
 
 
 # ── PALETTE ────────────────────────────────────────────────────────────────────
@@ -399,6 +403,73 @@ def load_historical():
     for c in ["CTR","Cargar Web","Conv Web"]:
         if c in df.columns: df[c] = df[c].apply(parse_pct)
     return df.sort_values("Fecha").reset_index(drop=True)
+
+# ── TG_SUBS: historial de crecimiento ──────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load_tg_subs():
+    if not GID_TG_SUBS:
+        return pd.DataFrame()
+    try:
+        url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_TG_SUBS}"
+        import urllib.request as _ur, io as _io
+        with _ur.urlopen(url) as r:
+            raw = pd.read_csv(_io.StringIO(r.read().decode("utf-8")))
+        fecha_col = next((c for c in raw.columns if "fecha" in str(c).lower()), None)
+        if fecha_col is None:
+            return pd.DataFrame()
+        raw = raw.rename(columns={
+            fecha_col: "fecha",
+            next((c for c in raw.columns if "unieron" in str(c).lower() or "entradas" in str(c).lower()), "entradas"): "entradas",
+            next((c for c in raw.columns if "fueron" in str(c).lower() or "salidas" in str(c).lower()), "salidas"): "salidas",
+            next((c for c in raw.columns if "total" in str(c).lower() or "suscriptores" in str(c).lower()), "miembros"): "miembros",
+        })
+        raw["fecha"] = pd.to_datetime(raw["fecha"], dayfirst=True, errors="coerce")
+        return raw.dropna(subset=["fecha"]).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+def _fetch_ultima_fecha_tg_subs():
+    if not GID_TG_SUBS:
+        return pd.Timestamp("2000-01-01")
+    try:
+        url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID_TG_SUBS}"
+        import urllib.request as _ur, io as _io
+        with _ur.urlopen(url) as r:
+            raw = pd.read_csv(_io.StringIO(r.read().decode("utf-8")))
+        fecha_col = next((c for c in raw.columns if "fecha" in str(c).lower()), None)
+        if fecha_col is None:
+            return pd.Timestamp("2000-01-01")
+        fechas = pd.to_datetime(raw[fecha_col], dayfirst=True, errors="coerce").dropna()
+        return fechas.max() if not fechas.empty else pd.Timestamp("2000-01-01")
+    except Exception:
+        return pd.Timestamp("2000-01-01")
+
+def sync_tg_growth(df_growth: pd.DataFrame):
+    if not APPS_SCRIPT_URL or df_growth.empty:
+        return
+    try:
+        ultima = _fetch_ultima_fecha_tg_subs()
+        _fecha_col = (df_growth["fecha"] - pd.Timedelta(hours=5))
+        df_new = df_growth[_fecha_col > ultima].copy()
+        if df_new.empty:
+            return
+        rows = []
+        for _, r in df_new.iterrows():
+            fecha_co = (r["fecha"] - pd.Timedelta(hours=5))
+            rows.append([
+                fecha_co.strftime("%d/%m/%Y"),
+                int(r.get("entradas", 0)),
+                int(r.get("salidas", 0)),
+                int(r.get("miembros", 0)),
+            ])
+        import urllib.request as _ur, json as _json
+        payload = _json.dumps({"rows": rows}).encode("utf-8")
+        req = _ur.Request(APPS_SCRIPT_URL, data=payload,
+                          headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(req, timeout=15) as resp:
+            pass
+    except Exception:
+        pass
 
 # ── PAGE SETUP ─────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Digital Crew · Dashboard", page_icon="⚡", layout="wide")
@@ -817,6 +888,11 @@ with c_btn:
 
 # Cargar datos de Telegram antes de las pestañas (necesario para Resumen)
 tg = load_telegram_data()
+
+# Sync automático de crecimiento a TG_Subs (sin caché para evitar duplicados)
+df_growth_full = tg.get("df_growth", pd.DataFrame())
+if not df_growth_full.empty and APPS_SCRIPT_URL:
+    sync_tg_growth(df_growth_full)
 
 # ── PESTAÑAS PRINCIPALES ───────────────────────────────────────────────────────
 pg0, pg1, pg2, pg3, pg4 = st.tabs(["📊  Resumen", "📅  Mes Actual", "📘  Meta Ads", "📲  Telegram", "🤖  IA"])
